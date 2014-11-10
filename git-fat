@@ -102,6 +102,7 @@ def difftreez_reader(input):
                 path = buffer[1]
                 yield (newhash, modflag, path)
                 buffer = []
+
 def gitconfig_get(name, file=None):
     args = ['git', 'config', '--get']
     if file is not None:
@@ -115,12 +116,123 @@ def gitconfig_get(name, file=None):
         return gitconfig_get(name)
     else:
         return output
+
 def gitconfig_set(name, value, file=None):
     args = ['git', 'config']
     if file is not None:
         args += ['--file', file]
     args += [name, value]
     p = subprocess.check_call(args)
+
+class SyncTool(object):
+    def __init__(self, gitroot, verbose):
+        self.gitroot = gitroot
+        self.verbose = verbose
+        self.gitdir = subprocess.check_output('git rev-parse --git-dir'.split()).strip()
+        self.objdir = os.path.join(self.gitdir, 'fat', 'objects')
+
+class RSync(SyncTool):
+    def __init__(self, gitroot, verbose):
+        super(RSync, self).__init__(gitroot, verbose)
+
+    def push(self, files):
+        cmd = self.get_rsync_command(push=True)
+        self.verbose('Executing: %s' % ' '.join(cmd))
+        p = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+        p.communicate(input='\x00'.join(files))
+        if p.returncode:
+            sys.exit(p.returncode)
+
+    def pull(self, files):
+        cmd = self.get_rsync_command(push=False)
+        self.verbose('Executing: %s' % ' '.join(cmd))
+        p = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+        p.communicate(input='\x00'.join(files))
+        if p.returncode:
+            sys.exit(p.returncode)
+
+    def get_rsync(self):
+        cfgpath   = os.path.join(self.gitroot,'.gitfat')
+        remote    = gitconfig_get('rsync.remote', file=cfgpath)
+        ssh_port  = gitconfig_get('rsync.sshport', file=cfgpath)
+        ssh_user  = gitconfig_get('rsync.sshuser', file=cfgpath)
+        options   = gitconfig_get('rsync.options', file=cfgpath)
+        if remote is None:
+            raise RuntimeError('No rsync.remote in %s' % cfgpath)
+        return remote, ssh_port, ssh_user, options
+
+    def get_rsync_command(self,push):
+        (remote, ssh_port, ssh_user, options) = self.get_rsync()
+        if push:
+            self.verbose('Pushing to %s' % (remote))
+        else:
+            self.verbose('Pulling from %s' % (remote))
+
+        cmd = ['rsync', '--progress', '--ignore-existing', '--from0', '--files-from=-']
+        rshopts = ''
+        if ssh_user:
+            rshopts += ' -l ' + ssh_user
+        if ssh_port:
+            rshopts += ' -p ' + ssh_port
+        if rshopts:
+            cmd.append('--rsh=ssh' + rshopts)
+        if options:
+            cmd += options.split(' ')
+        if push:
+            cmd += [self.objdir + '/', remote + '/']
+        else:
+            cmd += [remote + '/', self.objdir + '/']
+        return cmd
+
+
+class S3(SyncTool):
+    def __init__(self, gitroot, verbose):
+        super(S3, self).__init__(gitroot, verbose)
+
+    def push(self, files):
+        cmd = self.get_s3cmd_command(push=True)
+        self.verbose('Executing: %s' % ' '.join(cmd))
+        p = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+        p.communicate(input='\n'.join(files))
+        if p.returncode:
+            sys.exit(p.returncode)
+
+    def pull(self, files):
+        cmd = self.get_s3cmd_command(push=False)
+        self.verbose('Executing: %s' % ' '.join(cmd))
+        p = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+        p.communicate(input='\x00'.join(files))
+        if p.returncode:
+            sys.exit(p.returncode)
+
+    def get_s3(self):
+        cfgpath    = os.path.join(self.gitroot,'.gitfat')
+        bucket     = gitconfig_get('s3.bucket', file=cfgpath)
+        api_key    = gitconfig_get('s3.apikey', file=cfgpath)
+        api_secret = gitconfig_get('s3.secret', file=cfgpath)
+        if bucket is None:
+            raise RuntimeError('No s3.bucket in %s' % cfgpath)
+        return bucket, api_key, api_secret
+
+    def get_s3cmd_command(self,push):
+        (bucket, api_key, api_secret) = self.get_s3()
+        if push:
+            self.verbose('Pushing to %s' % (bucket))
+        else:
+            self.verbose('Pulling from %s' % (bucket))
+
+        cmd = ['s3cmd', 'sync', '--progress', '--skip-existing', '--files-from=-']
+        remote = 's3://' + bucket
+        if api_key:
+            cmd += ['--access_key=' + api_key]
+        if api_secret:
+            cmd += ['--secret_key=' + api_secret]
+        if push:
+            cmd += [self.objdir + '/', remote + '/']
+        else:
+            cmd += [remote + '/', self.objdir + '/']
+        return cmd
+
 
 class GitFat(object):
     DecodeError = RuntimeError
@@ -149,37 +261,7 @@ class GitFat(object):
             sys.stderr.write('fatal: git-fat is not yet configured in this repository.\n')
             sys.stderr.write('Run "git fat init" to configure.\n')
             sys.exit(1)
-    def get_rsync(self):
-        cfgpath   = os.path.join(self.gitroot,'.gitfat')
-        remote    = gitconfig_get('rsync.remote', file=cfgpath)
-        ssh_port  = gitconfig_get('rsync.sshport', file=cfgpath)
-        ssh_user  = gitconfig_get('rsync.sshuser', file=cfgpath)
-        options   = gitconfig_get('rsync.options', file=cfgpath)
-        if remote is None:
-            raise RuntimeError('No rsync.remote in %s' % cfgpath)
-        return remote, ssh_port, ssh_user, options
-    def get_rsync_command(self,push):
-        (remote, ssh_port, ssh_user, options) = self.get_rsync()
-        if push:
-            self.verbose('Pushing to %s' % (remote))
-        else:
-            self.verbose('Pulling from %s' % (remote))
 
-        cmd = ['rsync', '--progress', '--ignore-existing', '--from0', '--files-from=-']
-        rshopts = ''
-        if ssh_user:
-            rshopts += ' -l ' + ssh_user
-        if ssh_port:
-            rshopts += ' -p ' + ssh_port
-        if rshopts:
-            cmd.append('--rsh=ssh' + rshopts)
-        if options:
-            cmd += options.split(' ')
-        if push:
-            cmd += [self.objdir + '/', remote + '/']
-        else:
-            cmd += [remote + '/', self.objdir + '/']
-        return cmd
     def revparse(self, revname):
         return subprocess.check_output(['git', 'rev-parse', revname]).strip()
     def encode_v1(self, digest, bytes):
@@ -385,8 +467,10 @@ class GitFat(object):
             print('Garbage objects:')
             for g in garbage:
                 print('    ' + g)
+
     def is_dirty(self):
         return subprocess.call(['git', 'diff-index', '--quiet', 'HEAD']) == 0
+
     def cmd_push(self, args):
         'Push anything that I have stored and referenced'
         self.setup()
@@ -394,12 +478,31 @@ class GitFat(object):
         # (includes history). Finer-grained pushing would be useful.
         pushall = '--all' in args
         files = self.referenced_objects(all=pushall) & self.catalog_objects()
-        cmd = self.get_rsync_command(push=True)
-        self.verbose('Executing: %s' % ' '.join(cmd))
-        p = subprocess.Popen(cmd, stdin=subprocess.PIPE)
-        p.communicate(input='\x00'.join(files))
-        if p.returncode:
-            sys.exit(p.returncode)
+        self.push(files)
+
+    def push(self, files):
+        cfgpath = os.path.join(self.gitroot,'.gitfat')
+        if len(files) == 0:
+            self.verbose("Nothing to push")
+        else:
+            self.verbose("Pushing [%s]..." % (", ".join(files)))
+            if gitconfig_get("rsync.remote", file=cfgpath):
+                RSync(self.gitroot, self.verbose).push(files)
+            elif gitconfig_get("s3.bucket", file=cfgpath):
+                S3(self.gitroot, self.verbose).push(files)
+            self.verbose("done")
+
+    def pull(self, files):
+        cfgpath = os.path.join(self.gitroot,'.gitfat')
+        if len(files) == 0:
+            self.verbose("Nothing to pull")
+        else:
+            self.verbose("Pulling [%s]..." % (", ".join(files)))
+            if gitconfig_get("rsync.remote", file=cfgpath):
+                RSync(self.gitroot, self.verbose).pull(files)
+            elif gitconfig_get("s3.bucket", file=cfgpath):
+                S3(self.gitroot, self.verbose).pull(files)
+
     def checkout(self, show_orphans=False):
         'Update any stale files in the present working tree'
         self.assert_init_done()
@@ -418,6 +521,7 @@ class GitFat(object):
                 subprocess.check_call(['git', 'checkout-index', '--index', '--force', fname])
             elif show_orphans:
                 print('Data unavailable: %s %s' % (digest,fname))
+
     def cmd_pull(self, args):
         'Pull anything that I have referenced, but not stored'
         self.setup()
@@ -431,12 +535,7 @@ class GitFat(object):
             if rev:
                 refargs['rev'] = rev
         files = self.filter_objects(refargs, self.parse_pull_patterns(args))
-        cmd = self.get_rsync_command(push=False)
-        self.verbose('Executing: %s' % ' '.join(cmd))
-        p = subprocess.Popen(cmd, stdin=subprocess.PIPE)
-        p.communicate(input='\x00'.join(files))
-        if p.returncode:
-            sys.exit(p.returncode)
+        self.pull(files)
         self.checkout()
 
     def parse_pull_patterns(self, args):
@@ -521,6 +620,7 @@ class GitFat(object):
         hashonly.join()
         time1 = time.time()
         self.verbose('%d of %d blobs are >= %d bytes [elapsed %.3fs]' % (numlarge, numblobs, threshsize, time1-time0))
+
     def cmd_find(self, args):
         maxsize = int(args[0])
         blobsizes = dict(self.gen_large_blobs('--all', maxsize))
