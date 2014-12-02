@@ -201,7 +201,7 @@ class S3(SyncTool):
         cmd = self.get_s3cmd_command(push=False)
         self.verbose('Executing: %s' % ' '.join(cmd))
         p = subprocess.Popen(cmd, stdin=subprocess.PIPE)
-        p.communicate(input='\x00'.join(files))
+        p.communicate(input='\n'.join(files))
         if p.returncode:
             sys.exit(p.returncode)
 
