@@ -488,8 +488,9 @@ class GitFat(object):
         if self.is_init_done():
             print('Git fat already configured, check configuration in .git/config')
         else:
-            gitconfig_set('filter.fat.clean', 'git-fat filter-clean')
-            gitconfig_set('filter.fat.smudge', 'git-fat filter-smudge')
+            gitconfig_set('filter.fat.clean', '/usr/local/bin/git-fat filter-clean')
+            gitconfig_set('filter.fat.smudge', '/usr/local/bin/git-fat filter-smudge')
+            gitconfig_set('filter.fat.required', 'true')
             print('Initialized git fat')
     def gen_large_blobs(self, revs, threshsize):
         """Build dict of all blobs"""
