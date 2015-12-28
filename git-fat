@@ -7,6 +7,7 @@ import sys
 import hashlib
 import tempfile
 import os
+import platform
 import subprocess
 import shlex
 import shutil
@@ -143,7 +144,7 @@ class GitFat(object):
     def setup(self):
         mkdir_p(self.objdir)
     def is_init_done(self):
-        return gitconfig_get('filter.fat.clean') or gitconfig_get('filter.fat.smudge')
+        return gitconfig_get('filter.fat.clean') or gitconfig_get('filter.fat.smudge') or gitconfig_get('filter.fat.required')
     def assert_init_done(self):
         if not self.is_init_done():
             sys.stderr.write('fatal: git-fat is not yet configured in this repository.\n')
@@ -488,8 +489,11 @@ class GitFat(object):
         if self.is_init_done():
             print('Git fat already configured, check configuration in .git/config')
         else:
-            gitconfig_set('filter.fat.clean', '/usr/local/bin/git-fat filter-clean')
-            gitconfig_set('filter.fat.smudge', '/usr/local/bin/git-fat filter-smudge')
+            path = 'git-fat'
+            if platform.system() == 'Darwin':
+                path = '/usr/local/bin/git-fat'
+            gitconfig_set('filter.fat.clean', path + ' filter-clean')
+            gitconfig_set('filter.fat.smudge', path + ' filter-smudge')
             gitconfig_set('filter.fat.required', 'true')
             print('Initialized git fat')
     def gen_large_blobs(self, revs, threshsize):
